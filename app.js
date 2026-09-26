@@ -2,14 +2,17 @@
 (() => {
   const $ = id => document.getElementById(id);
   const DEFAULTS = {
-    mode: 'color', k: 6, spacing: 'fit',
+    mode: 'color', k: 8, layers: 4, spacing: 'fit',
     style: 'soft', geo: 4, minSize: 50, clean: 2, smooth: 'painterly', amount: 4, size: '700',
-    order: 'dark', overlap: 'over',
+    order: 'dark', overlap: 5, details: true,
     show: 'shapes', view: 'build', outlines: false, numbers: false, grid: '0',
   };
   const STORE = 'shapeStudy.opts';
   let opts = { ...DEFAULTS };
-  try { Object.assign(opts, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) { /* private mode */ }
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+    for (const key in DEFAULTS) if (typeof saved[key] === typeof DEFAULTS[key]) opts[key] = saved[key];
+  } catch (e) { /* private mode */ }
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(opts)); } catch (e) { /* ignore */ } };
 
   const ORDER_HINTS = {
@@ -18,10 +21,9 @@
     size: 'Largest masses first, details last.',
     depth: 'A guess at background first, subject last, based on where shapes sit in the frame.',
   };
-  const OVERLAP_HINTS = {
-    over: 'Early shapes extend under later ones, so you paint whole masses and lay details on top.',
-    puzzle: 'Each shape is only its visible part, fitted together like a puzzle.',
-  };
+  const overlapHint = v => v === 0
+    ? 'Off: each shape is only its visible part, fitted together like a puzzle.'
+    : 'Each layer is laid down as a bolder mass that runs under the next layers, which then paint over it.';
   const minFrac = v => 0.00005 * Math.pow(600, v / 100);
 
   // ---------- state ----------
@@ -46,16 +48,18 @@
       el.classList.toggle('hide', m[2] === '=' ? !eq : eq);
     });
     $('kOut').textContent = opts.k;
+    $('layersOut').textContent = opts.layers >= opts.k && (opts.order === 'dark' || opts.order === 'light') ? 'one per color' : opts.layers;
+    $('overlapOut').textContent = opts.overlap === 0 ? 'off' : opts.overlap <= 3 ? `${opts.overlap} · subtle` : opts.overlap <= 7 ? `${opts.overlap} · bold` : `${opts.overlap} · very bold`;
     $('geoOut').textContent = opts.geo;
     $('cleanOut').textContent = opts.clean === 0 ? 'off' : opts.clean;
     $('amountOut').textContent = opts.amount;
     const f = minFrac(opts.minSize) * 100;
     $('minSizeOut').textContent = (f < 0.1 ? f.toFixed(3) : f < 1 ? f.toFixed(2) : f.toFixed(1)) + '% of picture';
     $('orderHint').textContent = ORDER_HINTS[opts.order];
-    $('overlapHint').textContent = OVERLAP_HINTS[opts.overlap];
+    $('overlapHint').textContent = overlapHint(opts.overlap);
   }
 
-  const PROCESS_KEYS = ['mode', 'k', 'spacing', 'style', 'geo', 'minSize', 'clean', 'smooth', 'amount', 'size', 'order', 'overlap'];
+  const PROCESS_KEYS = ['mode', 'k', 'layers', 'spacing', 'style', 'geo', 'minSize', 'clean', 'smooth', 'amount', 'size', 'order', 'overlap', 'details'];
   function setOpt(name, value) {
     opts[name] = value;
     save(); syncControls();
@@ -141,8 +145,8 @@
       const quant = stage_('quant', k2, () => Shapes.quantize(prep, opts.k, opts.mode, opts.spacing));
       const k3 = [k2, opts.minSize, opts.clean].join('|');
       const R = stage_('regions', k3, () => Shapes.buildRegions(prep, quant, minFrac(opts.minSize), opts.clean));
-      const k4 = [k3, opts.order].join('|');
-      const P = stage_('plan', k4, () => Shapes.plan(R, opts.order));
+      const k4 = [k3, opts.order, opts.layers, opts.details].join('|');
+      const P = stage_('plan', k4, () => Shapes.plan(R, opts.order, opts.layers, opts.details));
       const k5 = [k4, opts.overlap, opts.style, opts.geo].join('|');
       const shapes = stage_('shapes', k5, () => {
         const list = Shapes.vectorize(R, P, opts.overlap, opts.style, opts.geo);
@@ -301,9 +305,10 @@
     $('prev').disabled = step <= 0;
     $('next').disabled = step >= n - 1;
     $('stepTitle').textContent = `Step ${step + 1} of ${n} · ${st.name}`;
-    const count = shapes.filter(s => s.step === step).length;
-    $('stepMeta').textContent = `${count} shape${count === 1 ? '' : 's'}`;
-    $('stepSw').innerHTML = st.colors.map(c => `<i title="Color ${c + 1}" style="background:${R.palette[c].hex}"></i>`).join('');
+    const inStep = shapes.filter(s => s.step === step);
+    const colors = [...new Set(inStep.map(s => s.color))].sort((a, b) => a - b);
+    $('stepMeta').textContent = `${inStep.length} shape${inStep.length === 1 ? '' : 's'} · ${colors.length} color${colors.length === 1 ? '' : 's'}`;
+    $('stepSw').innerHTML = colors.map(c => `<i title="Color ${c + 1}" style="background:${R.palette[c].hex}"></i>`).join('');
   }
 
   function buildPalette() {

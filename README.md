@@ -11,9 +11,9 @@ Everything runs in the browser with plain JavaScript. No AI, no server, and phot
 1. **Squint first** (optional): blurs or "painterly" smooths the photo so small texture disappears.
 2. **Reduces colors**: groups the photo into a few colors (or gray values) using k-means in Lab color space.
 3. **Makes shapes**: tidies ragged edges, merges specks smaller than the chosen size, and traces each shape's outline (soft, geometric, or exact).
-4. **Plans the layers**: sorts shapes into painting steps: dark → light, light → dark, big → small, or back → front (an estimate).
-
-"Paint over" mode lets early shapes run underneath later ones, so you block in whole masses and add details on top. "Puzzle pieces" keeps each shape to its visible part.
+4. **Plans the layers**: groups the colors into a chosen number of painting layers (darks, midtones, lights…), or orders shapes big → small or back → front (an estimate).
+5. **Overlaps like a painter**: each layer is laid down as a bolder, simpler mass that bridges gaps and runs under the areas later layers will paint over. It never covers anything an earlier layer finished, so the last step still matches the photo. Overlap 0 gives flat puzzle pieces instead.
+6. **Details & accents** (optional): a final step adds the small shapes the bold version merged away.
 
 ## Files
 

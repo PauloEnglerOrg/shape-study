@@ -289,14 +289,24 @@ const Shapes = (() => {
     const pal = quant.palette, K = pal.length;
     let lab = quant.labels;
     for (let i = 0; i < passes; i++) lab = majority(lab, w, h, K);
-    if (lab === quant.labels) lab = Uint8Array.from(lab);
+    const minArea = Math.max(2, Math.round(minFrac * N));
+    const comp = new Int32Array(N);
+    // "fine" keeps small shapes for the optional final details step
+    const fineMin = Math.max(2, Math.round(minArea / 10));
+    const fine = mergeSmall(Uint8Array.from(lab), w, h, pal, fineMin, comp);
+    lab = mergeSmall(Uint8Array.from(lab), w, h, pal, minArea, comp);
+    const R = describe(lab, w, h, pal, comp);
+    R.fine = fine; R.fineMin = fineMin;
+    return R;
+  }
 
+  // Absorb shapes smaller than minArea into the neighbor they share the most edge with.
+  function mergeSmall(lab, w, h, pal, minArea, comp) {
+    const N = w * h, K = pal.length;
     const colorDist = (a, b) => {
       const A = pal[a].lab, B = pal[b].lab;
       return (A[0] - B[0]) ** 2 + (A[1] - B[1]) ** 2 + (A[2] - B[2]) ** 2;
     };
-    const minArea = Math.max(2, Math.round(minFrac * N));
-    const comp = new Int32Array(N);
     const cnt = new Int32Array(K);
     for (let pass = 0; pass < 12; pass++) {
       const { count, areas } = components(lab, w, h, comp);
@@ -328,7 +338,11 @@ const Shapes = (() => {
         for (let i = s0; i < s1; i++) lab[order[i]] = best;
       }
     }
+    return lab;
+  }
 
+  function describe(lab, w, h, pal, comp) {
+    const N = w * h, K = pal.length;
     const { count } = components(lab, w, h, comp);
     const regions = [];
     for (let c = 0; c < count; c++) {
@@ -354,7 +368,7 @@ const Shapes = (() => {
       if (dist[p] > r.lr) { r.lr = dist[p]; r.lx = (p % w) + 0.5; r.ly = Math.floor(p / w) + 0.5; }
     }
     regions.forEach(r => { r.cx = r.sx / r.area; r.cy = r.sy / r.area; });
-    return { w, h, comp, regions, palette: pal };
+    return { w, h, comp, labels: lab, regions, palette: pal };
   }
 
   function distanceInside(comp, w, h) {
@@ -383,104 +397,270 @@ const Shapes = (() => {
   }
 
   // ---------- 4. painting plan ----------
-  function plan(R, order) {
-    const { regions, palette, w, h } = R, N = w * h, K = palette.length;
-    const regionStep = new Int32Array(regions.length);
-    let groups = [];
+  // Split sorted values into `S` groups, keeping similar values together.
+  function groupValues(Ls, S) {
+    const K = Ls.length;
+    S = Math.max(1, Math.min(S, K));
+    const cost = (a, b) => {
+      let m = 0;
+      for (let i = a; i < b; i++) m += Ls[i];
+      m /= b - a;
+      let c = 0;
+      for (let i = a; i < b; i++) c += (Ls[i] - m) ** 2;
+      return c;
+    };
+    const dp = [], cut = [];
+    for (let s = 0; s <= S; s++) { dp.push(new Float64Array(K + 1).fill(Infinity)); cut.push(new Int32Array(K + 1)); }
+    dp[0][0] = 0;
+    for (let s = 1; s <= S; s++) {
+      for (let j = s; j <= K; j++) {
+        for (let i = s - 1; i < j; i++) {
+          const v = dp[s - 1][i] + cost(i, j);
+          if (v < dp[s][j]) { dp[s][j] = v; cut[s][j] = i; }
+        }
+      }
+    }
+    const groups = [];
+    for (let s = S, j = K; s > 0; s--) {
+      const i = cut[s][j];
+      groups.unshift([...Array(j - i).keys()].map(k => i + k));
+      j = i;
+    }
+    return groups;
+  }
+
+  const VALUE_NAMES = {
+    1: ['All values'],
+    2: ['Darks', 'Lights'],
+    3: ['Darks', 'Midtones', 'Lights'],
+    4: ['Darks', 'Dark midtones', 'Light midtones', 'Lights'],
+    5: ['Darks', 'Dark midtones', 'Midtones', 'Light midtones', 'Lights'],
+    6: ['Darkest darks', 'Darks', 'Dark midtones', 'Light midtones', 'Lights', 'Highlights'],
+  };
+
+  // The plan is a list of "items" in painting order. Each item paints one color
+  // (value orders) or one shape (size / depth orders). Items are grouped into steps.
+  function plan(R, order, layers, details) {
+    const { regions, palette, w, h, comp, labels } = R, N = w * h, K = palette.length;
+    const steps = [], items = [];
+    const pixelRank = new Int32Array(N);
     if (order === 'dark' || order === 'light') {
-      const cols = [...Array(K).keys()];
-      if (order === 'light') cols.reverse();
-      groups = cols.map(c => ({ name: '', ids: regions.filter(r => r.color === c).map(r => r.id) }));
-      groups = groups.filter(g => g.ids.length);
-      groups.forEach((g, i) => {
-        const first = order === 'dark' ? 'Darkest value' : 'Lightest value';
-        const last = order === 'dark' ? 'Lightest value' : 'Darkest value';
-        g.name = i === 0 ? first : i === groups.length - 1 ? last : (order === 'dark' ? 'Next lighter value' : 'Next darker value');
+      let groups = groupValues(palette.map(c => c.lab[0]), layers);
+      const S = groups.length;
+      let names = VALUE_NAMES[S] ? VALUE_NAMES[S].slice() : groups.map((g, i) => `Values ${i + 1}`);
+      if (order === 'light') { groups = groups.reverse().map(g => g.reverse()); names.reverse(); }
+      const colorRank = new Int32Array(K);
+      groups.forEach((g, s) => {
+        steps.push({ name: names[s] });
+        g.forEach(c => { colorRank[c] = items.length; items.push({ color: c, stage: s }); });
       });
+      for (let p = 0; p < N; p++) pixelRank[p] = colorRank[labels[p]];
     } else {
-      let tiers, sorted;
+      let sorted, q, names;
+      const S = Math.max(1, Math.min(layers, regions.length));
       if (order === 'size') {
-        tiers = [['Big masses', 0.6], ['Medium shapes', 0.85], ['Small shapes', 0.96], ['Details', Infinity]];
         sorted = regions.slice().sort((a, b) => b.area - a.area);
+        q = 0.4;
+        names = ['Big masses', ...(S === 3 ? ['Medium shapes'] : S === 4 ? ['Medium shapes', 'Small shapes'] : [...Array(Math.max(0, S - 2)).keys()].map(i => `Smaller shapes ${i + 1}`)), 'Smallest shapes'];
       } else {
         // background guess: touches the frame, is large, sits away from the center
-        tiers = [['Background (estimate)', 0.45], ['Middle ground (estimate)', 0.8], ['Subject & details (estimate)', Infinity]];
         const score = r => {
           const edge = Math.min(1, r.edge / (0.25 * (w + h)));
           const dc = Math.hypot((r.cx - w / 2) / (w / 2), (r.cy - h / 2) / (h / 2)) / Math.SQRT2;
           return 1.5 * edge + 0.8 * dc + Math.sqrt(r.area / N);
         };
-        regions.forEach(r => { r.score = score(r); });
-        sorted = regions.slice().sort((a, b) => b.score - a.score);
+        sorted = regions.slice().sort((a, b) => score(b) - score(a));
+        q = 0.5;
+        names = ['Back (estimate)', ...(S === 3 ? ['Middle'] : [...Array(Math.max(0, S - 2)).keys()].map(i => `Middle ${i + 1}`)), 'Front (estimate)'];
       }
-      groups = tiers.map(t => ({ name: t[0], ids: [] }));
-      let cum = 0;
+      if (S === 1) names = ['Everything'];
+      for (let s = 0; s < S; s++) steps.push({ name: names[s] });
+      const regionRank = new Int32Array(regions.length);
+      let cum = 0, s = 0;
       for (const r of sorted) {
-        let t = 0;
-        while (cum >= tiers[t][1] * N) t++;
-        groups[t].ids.push(r.id);
+        while (s < S - 1 && cum >= (1 - Math.pow(q, s + 1)) * N) s++;
+        regionRank[r.id] = items.length;
+        items.push({ region: r.id, color: r.color, stage: s });
         cum += r.area;
       }
-      groups = groups.filter(g => g.ids.length);
+      for (let p = 0; p < N; p++) pixelRank[p] = regionRank[comp[p]];
     }
-    groups.forEach((g, i) => {
-      g.ids.forEach(id => { regionStep[id] = i; });
-      g.colors = [...new Set(g.ids.map(id => regions[id].color))].sort((a, b) => a - b);
-    });
-    return { steps: groups, regionStep };
+    // drop empty steps
+    const used = [...new Set(items.map(it => it.stage))].sort((a, b) => a - b);
+    const remap = new Map(used.map((s, i) => [s, i]));
+    const kept = used.map(s => steps[s]);
+    items.forEach(it => { it.stage = remap.get(it.stage); });
+    kept.forEach((st, i) => { st.colors = [...new Set(items.filter(it => it.stage === i).map(it => it.color))].sort((a, b) => a - b); });
+    if (details) kept.push({ name: 'Details & accents', details: true, colors: [] });
+    return { steps: kept, items, pixelRank, details };
   }
 
   // ---------- 5. vectorize ----------
-  function vectorize(R, P, overlap, style, geo) {
-    const { w, comp, regions } = R, { regionStep } = P;
-    const unit = Math.max(R.w, R.h) / 600;
-    const shapes = [];
-    for (const r of regions) {
-      const PW = r.maxx - r.minx + 3, PH = r.maxy - r.miny + 3;
-      const ox = r.minx - 1, oy = r.miny - 1;
-      const mask = new Uint8Array(PW * PH);
-      for (let y = r.miny; y <= r.maxy; y++) {
-        for (let x = r.minx; x <= r.maxx; x++) if (comp[y * w + x] === r.id) mask[(y - oy) * PW + x - ox] = 1;
+  // Exact Euclidean distance transform (Felzenszwalb). Returns squared distance
+  // from each pixel to the nearest pixel where `on` is 1.
+  const BIG = 1e20;
+  function edt(on, W, H) {
+    const d = new Float64Array(W * H);
+    for (let i = 0; i < d.length; i++) d[i] = on[i] ? 0 : BIG;
+    const n = Math.max(W, H);
+    const f = new Float64Array(n), out = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+    const pass1d = len => {
+      let k = 0; v[0] = 0; z[0] = -BIG; z[1] = BIG;
+      for (let q = 1; q < len; q++) {
+        let s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+        while (s <= z[k]) { k--; s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]); }
+        k++; v[k] = q; z[k] = s; z[k + 1] = BIG;
       }
-      if (overlap === 'over') fillCoveredHoles(mask, PW, PH, ox, oy, w, comp, regionStep, regionStep[r.id]);
-      const loops = trace(mask, PW, PH, ox, oy)
-        .map(l => simplify(l, style, geo, unit))
-        .filter(l => l.length >= 6);
-      if (!loops.length) continue;
-      shapes.push({ id: r.id, step: regionStep[r.id], color: r.color, loops, lx: r.lx, ly: r.ly, lr: r.lr, area: r.area });
-    }
-    shapes.sort((a, b) => a.step - b.step || b.area - a.area);
-    return shapes;
-  }
-
-  // Paint-over mode: a shape ignores holes that later steps will paint on top of,
-  // the way a painter blocks in a whole mass and adds the details afterwards.
-  function fillCoveredHoles(mask, PW, PH, ox, oy, w, comp, regionStep, step) {
-    const seen = new Uint8Array(PW * PH), stack = new Int32Array(PW * PH);
-    let sp = 0;
-    const push = p => { if (!mask[p] && !seen[p]) { seen[p] = 1; stack[sp++] = p; } };
-    for (let x = 0; x < PW; x++) { push(x); push((PH - 1) * PW + x); }
-    for (let y = 0; y < PH; y++) { push(y * PW); push(y * PW + PW - 1); }
-    const flood = collect => {
-      while (sp) {
-        const p = stack[--sp]; if (collect) collect.push(p);
-        const x = p % PW;
-        if (x > 0) push(p - 1); if (x < PW - 1) push(p + 1);
-        if (p >= PW) push(p - PW); if (p < PW * (PH - 1)) push(p + PW);
+      k = 0;
+      for (let q = 0; q < len; q++) {
+        while (z[k + 1] < q) k++;
+        out[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
       }
     };
-    flood(null);
-    for (let s = 0; s < PW * PH; s++) {
-      if (mask[s] || seen[s]) continue;
-      const hole = [];
-      push(s); flood(hole);
-      let later = true;
-      for (const p of hole) {
-        const x = (p % PW) + ox, y = Math.floor(p / PW) + oy;
-        if (regionStep[comp[y * w + x]] <= step) { later = false; break; }
-      }
-      if (later) for (const p of hole) mask[p] = 1;
+    for (let x = 0; x < W; x++) {
+      for (let y = 0; y < H; y++) f[y] = d[y * W + x];
+      pass1d(H);
+      for (let y = 0; y < H; y++) d[y * W + x] = out[y];
     }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) f[x] = d[y * W + x];
+      pass1d(W);
+      for (let x = 0; x < W; x++) d[y * W + x] = out[x];
+    }
+    return d;
+  }
+
+  // For each item, work out the shape a painter would lay down: the visible part,
+  // plus (with overlap) a bolder mass that bridges gaps, swallows islands and spills
+  // a little into areas that LATER items will paint over. It never spills onto
+  // anything an earlier item already finished, so the final picture stays correct.
+  function vectorize(R, P, overlap, style, geo) {
+    const { w, h, comp, labels, regions, palette } = R, N = w * h;
+    const unit = Math.max(w, h) / 600;
+    const rc = overlap * 2.4 * unit, rb = overlap * 0.6 * unit;
+    const pad = Math.ceil(rc + rb) + 2;
+    const shapes = [];
+
+    // bounding box of each color (for value orders)
+    const cb = palette.map(() => ({ minx: w, miny: h, maxx: -1, maxy: -1 }));
+    for (const r of regions) {
+      const b = cb[r.color];
+      b.minx = Math.min(b.minx, r.minx); b.miny = Math.min(b.miny, r.miny);
+      b.maxx = Math.max(b.maxx, r.maxx); b.maxy = Math.max(b.maxy, r.maxy);
+    }
+
+    P.items.forEach((it, rank) => {
+      const byRegion = it.region !== undefined;
+      const b = byRegion ? regions[it.region] : cb[it.color];
+      if (b.maxx < 0) return;
+      const x0 = Math.max(0, b.minx - pad), y0 = Math.max(0, b.miny - pad);
+      const x1 = Math.min(w - 1, b.maxx + pad), y1 = Math.min(h - 1, b.maxy + pad);
+      const WW = x1 - x0 + 1, WH = y1 - y0 + 1, WN = WW * WH;
+      const tgt = new Uint8Array(WN), allowed = new Uint8Array(WN);
+      for (let y = 0; y < WH; y++) {
+        for (let x = 0; x < WW; x++) {
+          const p = (y + y0) * w + x + x0, i = y * WW + x;
+          const t = byRegion ? comp[p] === it.region : labels[p] === it.color;
+          tgt[i] = t ? 1 : 0;
+          allowed[i] = t || P.pixelRank[p] > rank ? 1 : 0;
+        }
+      }
+      let mask = tgt;
+      if (overlap > 0) {
+        const dT = edt(tgt, WW, WH);
+        const rc2 = rc * rc, rb2 = rb * rb;
+        const dil = new Uint8Array(WN);
+        for (let i = 0; i < WN; i++) dil[i] = dT[i] <= rc2 ? 0 : 1; // 1 = outside the grown shape
+        const dO = edt(dil, WW, WH);
+        const shape = new Uint8Array(WN);
+        for (let i = 0; i < WN; i++) shape[i] = tgt[i] || dT[i] <= rb2 || (!dil[i] && dO[i] > rc2) ? 1 : 0;
+        fillHoles(shape, WW, WH);
+        mask = new Uint8Array(WN);
+        for (let i = 0; i < WN; i++) mask[i] = tgt[i] || (allowed[i] && shape[i]) ? 1 : 0;
+      }
+      addShapes(mask, tgt, WW, WH, x0, y0, rank, it.stage, it.color);
+    });
+
+    if (P.details) {
+      // final step: small shapes that the bold version merged away
+      const diff = new Uint8Array(N);
+      for (let p = 0; p < N; p++) diff[p] = R.fine[p] !== labels[p] ? R.fine[p] : 255;
+      const dc = new Int32Array(N);
+      const { count, areas } = components(diff, w, h, dc);
+      const rank = P.items.length, stage = P.steps.length - 1;
+      const boxes = [];
+      for (let c = 0; c < count; c++) boxes.push({ minx: w, miny: h, maxx: -1, maxy: -1, color: 255 });
+      for (let y = 0, p = 0; y < h; y++) {
+        for (let x = 0; x < w; x++, p++) {
+          const bx = boxes[dc[p]];
+          bx.color = diff[p];
+          if (x < bx.minx) bx.minx = x; if (x > bx.maxx) bx.maxx = x;
+          if (y < bx.miny) bx.miny = y; if (y > bx.maxy) bx.maxy = y;
+        }
+      }
+      boxes.forEach((bx, c) => {
+        if (bx.color === 255 || areas[c] < R.fineMin) return;
+        const WW = bx.maxx - bx.minx + 1, WH = bx.maxy - bx.miny + 1;
+        const m = new Uint8Array(WW * WH);
+        for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) m[y * WW + x] = dc[(y + bx.miny) * w + x + bx.minx] === c ? 1 : 0;
+        addShapes(m, m, WW, WH, bx.minx, bx.miny, rank, stage, bx.color);
+      });
+    }
+
+    shapes.sort((a, b) => a.rank - b.rank || b.area - a.area);
+    return shapes;
+
+    // split a mask into connected pieces and trace each one
+    function addShapes(mask, tgt, WW, WH, x0, y0, rank, stage, color) {
+      const WN = WW * WH;
+      const pc = new Int32Array(WN);
+      const { count, areas } = components(mask, WW, WH, pc);
+      const inv = new Uint8Array(WN);
+      for (let i = 0; i < WN; i++) inv[i] = mask[i] ? 0 : 1;
+      const din = edt(inv, WW, WH); // distance to the shape's edge, for number placement
+      const info = [];
+      for (let c = 0; c < count; c++) info.push({ minx: WW, miny: WH, maxx: -1, maxy: -1, hasT: false, on: false, lr: -1, lx: 0, ly: 0 });
+      for (let y = 0, i = 0; y < WH; y++) {
+        for (let x = 0; x < WW; x++, i++) {
+          const f = info[pc[i]];
+          if (!mask[i]) continue;
+          f.on = true;
+          if (tgt[i]) f.hasT = true;
+          if (x < f.minx) f.minx = x; if (x > f.maxx) f.maxx = x;
+          if (y < f.miny) f.miny = y; if (y > f.maxy) f.maxy = y;
+          const gx = x + x0, gy = y + y0;
+          const r = Math.min(Math.sqrt(din[i]), gx + 1, gy + 1, w - gx, h - gy);
+          if (r > f.lr) { f.lr = r; f.lx = gx + 0.5; f.ly = gy + 0.5; }
+        }
+      }
+      info.forEach((f, c) => {
+        if (!f.on || !f.hasT) return;
+        const PW = f.maxx - f.minx + 3, PH = f.maxy - f.miny + 3;
+        const m = new Uint8Array(PW * PH);
+        for (let y = f.miny; y <= f.maxy; y++) {
+          for (let x = f.minx; x <= f.maxx; x++) if (pc[y * WW + x] === c) m[(y - f.miny + 1) * PW + x - f.minx + 1] = 1;
+        }
+        const loops = trace(m, PW, PH, f.minx - 1 + x0, f.miny - 1 + y0)
+          .map(l => simplify(l, style, geo, unit))
+          .filter(l => l.length >= 6);
+        if (loops.length) shapes.push({ rank, step: stage, color, loops, lx: f.lx, ly: f.ly, lr: f.lr, area: areas[c] });
+      });
+    }
+  }
+
+  // Fill enclosed holes (anything not reachable from the window border).
+  function fillHoles(mask, W, H) {
+    const seen = new Uint8Array(W * H), stack = new Int32Array(W * H);
+    let sp = 0;
+    const push = p => { if (!mask[p] && !seen[p]) { seen[p] = 1; stack[sp++] = p; } };
+    for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+    for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
+    while (sp) {
+      const p = stack[--sp], x = p % W;
+      if (x > 0) push(p - 1); if (x < W - 1) push(p + 1);
+      if (p >= W) push(p - W); if (p < W * (H - 1)) push(p + W);
+    }
+    for (let i = 0; i < W * H; i++) if (!mask[i] && !seen[i]) mask[i] = 1;
   }
 
   // Follow the pixel edges around a mask; returns closed loops of corner points.

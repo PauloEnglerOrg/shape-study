@@ -200,15 +200,20 @@
 
   <aside class="panel">
     <details open>
-      <summary>Colors</summary>
+      <summary>Colors &amp; layers</summary>
       <div class="group">
-        <div class="field">
-          <div class="lbl">Mode</div>
-          <div class="seg" data-opt="mode"><button data-v="color">Color</button><button data-v="value">Values (gray)</button></div>
-        </div>
         <div class="field">
           <label for="k">Number of colors <output id="kOut"></output></label>
           <input id="k" data-opt="k" type="range" min="2" max="16" step="1">
+        </div>
+        <div class="field">
+          <label for="layers">Number of layers <output id="layersOut"></output></label>
+          <input id="layers" data-opt="layers" type="range" min="1" max="10" step="1">
+          <div class="hint">Colors are grouped into this many painting steps, e.g. 10 colors in 4 layers.</div>
+        </div>
+        <div class="field">
+          <div class="lbl">Mode</div>
+          <div class="seg" data-opt="mode"><button data-v="color">Color</button><button data-v="value">Values (gray)</button></div>
         </div>
         <div class="field" data-show="mode=value">
           <div class="lbl">Value steps</div>
@@ -265,10 +270,11 @@
           <div id="orderHint" class="hint"></div>
         </div>
         <div class="field">
-          <div class="lbl">Overlap</div>
-          <div class="seg" data-opt="overlap"><button data-v="over">Paint over</button><button data-v="puzzle">Puzzle pieces</button></div>
+          <label for="overlap">Overlap <output id="overlapOut"></output></label>
+          <input id="overlap" data-opt="overlap" type="range" min="0" max="10" step="1">
           <div id="overlapHint" class="hint"></div>
         </div>
+        <label class="toggle">Final details step <input type="checkbox" data-opt="details"></label>
       </div>
     </details>
 
