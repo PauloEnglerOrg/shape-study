@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shape Study</title>
+<meta name="description" content="Turn a reference photo into simple, layered shapes for painting studies.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e9e4da'/%3E%3Cpath d='M4 22 L13 9 L20 18 Z' fill='%23384a5c'/%3E%3Ccircle cx='21' cy='13' r='6' fill='%23c9793f'/%3E%3Crect x='4' y='21' width='24' height='7' fill='%237b6a58'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #efebe4;
+    --panel: #fbfaf7;
+    --ink: #24211d;
+    --muted: #6f685e;
+    --line: #dcd5ca;
+    --accent: #b5532c;
+    --accent-ink: #fff;
+    --chip: #e9e4da;
+    --stage: #e2ddd3;
+    --ground: #fbfaf7;
+    --shadow: 0 1px 2px rgba(40, 30, 20, .08), 0 8px 24px rgba(40, 30, 20, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1a18;
+      --panel: #252321;
+      --ink: #ece7df;
+      --muted: #a39b8f;
+      --line: #3a3733;
+      --accent: #e0774a;
+      --accent-ink: #1b1a18;
+      --chip: #312e2a;
+      --stage: #141312;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body { font: 14px/1.45 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  button, input, select { font: inherit; color: inherit; }
+
+  header.top {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; letter-spacing: -.01em; }
+  .brand svg { width: 26px; height: 26px; border-radius: 6px; }
+  .brand small { font-weight: 400; color: var(--muted); font-size: 13px; }
+  .actions { display: flex; gap: 8px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+    padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+    font-weight: 550; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn:disabled { opacity: .45; cursor: default; }
+
+  main.layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; padding: 20px; align-items: start; }
+  .stage-col { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+  .stage {
+    position: relative; background: var(--stage); border-radius: 12px;
+    height: calc(100vh - 250px); min-height: 320px;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  .stage.drag { outline: 3px dashed var(--accent); outline-offset: -8px; }
+  .canvases { display: flex; gap: 12px; align-items: center; justify-content: center; }
+  .canvases.stack { flex-direction: column; }
+  .canvases canvas { display: block; box-shadow: var(--shadow); background: var(--ground); }
+  .empty { text-align: center; color: var(--muted); max-width: 340px; padding: 24px; }
+  .empty h2 { color: var(--ink); font-size: 18px; margin: 0 0 6px; font-weight: 650; }
+  .empty p { margin: 0 0 16px; }
+  .empty .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .busy {
+    position: absolute; top: 12px; right: 12px; padding: 5px 12px; border-radius: 99px;
+    background: var(--panel); box-shadow: var(--shadow); font-size: 12px; color: var(--muted);
+    opacity: 0; transition: opacity .15s; pointer-events: none;
+  }
+  .busy.on { opacity: 1; }
+  .toast {
+    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px;
+    opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .toast.on { opacity: 1; }
+
+  .stepbar {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  }
+  .stepbar .nav { width: 36px; height: 36px; padding: 0; justify-content: center; font-size: 16px; }
+  .stepinfo { min-width: 0; }
+  .stepinfo .title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .stepinfo .title b { font-size: 15px; }
+  .stepinfo .title span { color: var(--muted); font-size: 13px; }
+  .stepinfo .sw { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+  .stepinfo .sw i { width: 18px; height: 18px; border-radius: 4px; border: 1px solid rgba(0,0,0,.15); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .stepslider { grid-column: 1 / -1; }
+
+  .palette { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chipc {
+    display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 5px; cursor: pointer;
+    border-radius: 9px; border: 1px solid var(--line); background: var(--panel); text-align: left;
+  }
+  .chipc.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .chipc i { width: 30px; height: 30px; border-radius: 6px; border: 1px solid rgba(0,0,0,.15);
+    display: grid; place-items: center; font-style: normal; font-weight: 650; font-size: 12px; }
+  .chipc div { font-size: 12px; line-height: 1.3; }
+  .chipc div b { font-size: 12px; }
+  .chipc div span { color: var(--muted); }
+
+  aside.panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow: auto;
+  }
+  details { border-bottom: 1px solid var(--line); }
+  details:last-child { border-bottom: 0; }
+  summary {
+    list-style: none; cursor: pointer; padding: 12px 16px; font-weight: 650;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "›"; color: var(--muted); transform: rotate(90deg); transition: transform .15s; font-size: 18px; line-height: 1; }
+  details:not([open]) summary::after { transform: rotate(0deg); }
+  .group { padding: 0 16px 14px; display: flex; flex-direction: column; gap: 12px; }
+  .field > label, .field > .lbl { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  .field > label output, .field > .lbl output { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .field .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 4px; background: var(--chip); padding: 3px; border-radius: 9px; }
+  .seg button {
+    flex: 1 1 auto; border: 0; background: transparent; padding: 5px 8px; border-radius: 7px;
+    cursor: pointer; font-size: 12.5px; color: var(--muted); white-space: nowrap;
+  }
+  .seg button.on { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; font-size: 13px; }
+  .toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .hide { display: none !important; }
+  .row2 { display: flex; gap: 8px; }
+  .row2 .btn { flex: 1; justify-content: center; }
+
+  @media (max-width: 900px) {
+    header.top { padding: 10px 16px; }
+    .brand small { display: none; }
+    main.layout { grid-template-columns: 1fr; padding: 16px; gap: 16px; }
+    .stage { height: 62vh; min-height: 200px; }
+    aside.panel { position: static; max-height: none; }
+  }
+  @media (max-width: 480px) {
+    .actions .btn { padding: 7px 10px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" fill="#e9e4da"/><path d="M4 22 L13 9 L20 18 Z" fill="#384a5c"/><circle cx="21" cy="13" r="6" fill="#c9793f"/><rect x="4" y="21" width="24" height="7" fill="#7b6a58"/></svg>
+    Shape Study <small>photo → shapes → painting steps</small>
+  </div>
+  <div class="actions">
+    <label class="btn primary">Open photo<input id="file" type="file" accept="image/*" hidden></label>
+    <button id="sample" class="btn">Sample</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage-col">
+    <div id="stage" class="stage">
+      <div id="empty" class="empty">
+        <h2>Start with a reference photo</h2>
+        <p>Drop a photo here, paste one, or open a file. Everything happens on your device.</p>
+        <div class="row">
+          <label class="btn primary">Open photo<input id="file2" type="file" accept="image/*" hidden></label>
+          <button id="sample2" class="btn">Try the sample</button>
+        </div>
+      </div>
+      <div id="canvases" class="canvases hide">
+        <canvas id="cvShapes" aria-label="Simplified shapes"></canvas>
+        <canvas id="cvPhoto" aria-label="Original photo"></canvas>
+      </div>
+      <div id="busy" class="busy">Working…</div>
+      <div id="toast" class="toast"></div>
+    </div>
+
+    <div id="stepbar" class="stepbar hide">
+      <button id="prev" class="btn nav" aria-label="Previous step">‹</button>
+      <div class="stepinfo">
+        <div class="title"><b id="stepTitle"></b><span id="stepMeta"></span></div>
+        <div id="stepSw" class="sw"></div>
+      </div>
+      <button id="next" class="btn nav" aria-label="Next step">›</button>
+      <input id="stepSlider" class="stepslider" type="range" min="0" max="0" value="0" aria-label="Painting step">
+    </div>
+
+    <div id="palette" class="palette"></div>
+  </section>
+
+  <aside class="panel">
+    <details open>
+      <summary>Colors</summary>
+      <div class="group">
+        <div class="field">
+          <div class="lbl">Mode</div>
+          <div class="seg" data-opt="mode"><button data-v="color">Color</button><button data-v="value">Values (gray)</button></div>
+        </div>
+        <div class="field">
+          <label for="k">Number of colors <output id="kOut"></output></label>
+          <input id="k" data-opt="k" type="range" min="2" max="16" step="1">
+        </div>
+        <div class="field" data-show="mode=value">
+          <div class="lbl">Value steps</div>
+          <div class="seg" data-opt="spacing"><button data-v="fit">Fit to photo</button><button data-v="even">Even steps</button></div>
+          <div class="hint">Even steps give a clean value scale, like a notan.</div>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Shapes</summary>
+      <div class="group">
+        <div class="field">
+          <div class="lbl">Shape style</div>
+          <div class="seg" data-opt="style"><button data-v="soft">Soft</button><button data-v="geometric">Geometric</button><button data-v="pixel">Exact</button></div>
+        </div>
+        <div class="field" data-show="style=geometric">
+          <label for="geo">Angularity <output id="geoOut"></output></label>
+          <input id="geo" data-opt="geo" type="range" min="1" max="10" step="1">
+        </div>
+        <div class="field">
+          <label for="minSize">Smallest shape <output id="minSizeOut"></output></label>
+          <input id="minSize" data-opt="minSize" type="range" min="0" max="100" step="1">
+          <div class="hint">Higher merges more specks into bigger masses.</div>
+        </div>
+        <div class="field">
+          <label for="clean">Tidy edges <output id="cleanOut"></output></label>
+          <input id="clean" data-opt="clean" type="range" min="0" max="5" step="1">
+        </div>
+        <div class="field">
+          <div class="lbl">Squint first</div>
+          <div class="seg" data-opt="smooth"><button data-v="none">Off</button><button data-v="blur">Blur</button><button data-v="painterly">Painterly</button></div>
+        </div>
+        <div class="field" data-show="smooth!=none">
+          <label for="amount">Squint amount <output id="amountOut"></output></label>
+          <input id="amount" data-opt="amount" type="range" min="1" max="10" step="1">
+        </div>
+        <div class="field">
+          <div class="lbl">Working size</div>
+          <div class="seg" data-opt="size"><button data-v="400">Quick</button><button data-v="700">Normal</button><button data-v="1100">Fine</button></div>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Layers</summary>
+      <div class="group">
+        <div class="field">
+          <div class="lbl">Painting order</div>
+          <div class="seg" data-opt="order">
+            <button data-v="dark">Dark → light</button><button data-v="light">Light → dark</button>
+            <button data-v="size">Big → small</button><button data-v="depth">Back → front</button>
+          </div>
+          <div id="orderHint" class="hint"></div>
+        </div>
+        <div class="field">
+          <div class="lbl">Overlap</div>
+          <div class="seg" data-opt="overlap"><button data-v="over">Paint over</button><button data-v="puzzle">Puzzle pieces</button></div>
+          <div id="overlapHint" class="hint"></div>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>View</summary>
+      <div class="group">
+        <div class="field">
+          <div class="lbl">Show</div>
+          <div class="seg" data-opt="show"><button data-v="shapes">Shapes</button><button data-v="photo">Photo</button><button data-v="both">Both</button></div>
+        </div>
+        <div class="field">
+          <div class="lbl">Step view</div>
+          <div class="seg" data-opt="view"><button data-v="build">Build up</button><button data-v="highlight">Highlight</button><button data-v="alone">Step alone</button></div>
+        </div>
+        <label class="toggle">Outlines <input type="checkbox" data-opt="outlines"></label>
+        <label class="toggle">Color numbers <input type="checkbox" data-opt="numbers"></label>
+        <div class="field">
+          <div class="lbl">Grid</div>
+          <div class="seg" data-opt="grid"><button data-v="0">Off</button><button data-v="3">3</button><button data-v="4">4</button><button data-v="6">6</button><button data-v="8">8</button></div>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Save</summary>
+      <div class="group">
+        <div class="row2">
+          <button id="savePng" class="btn" disabled>Image (PNG)</button>
+          <button id="saveSvg" class="btn" disabled>Layers (SVG)</button>
+        </div>
+        <div class="hint">PNG saves the current view. SVG keeps every step as its own layer group, so you can open it in Illustrator, Affinity or Procreate.</div>
+        <button id="reset" class="btn">Reset all settings</button>
+      </div>
+    </details>
+  </aside>
+</main>
+
+<script src="shapes.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
